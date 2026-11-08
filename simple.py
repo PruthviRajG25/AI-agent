@@ -3,6 +3,7 @@ import os
 import sys
 import threading
 import time
+from datetime import datetime
 
 # Ensure proper UTF-8 output on Windows terminal
 if sys.platform == "win32":
@@ -29,11 +30,28 @@ client = OpenAI(
     api_key=os.getenv("API_KEY", "dummy"),
 )
 
+# Background model warm-up: eliminates the 10s cold-start on the user's first query
+def _warmup_model():
+    try:
+        client.chat.completions.create(
+            model=os.getenv("MODEL", "llama3.2:latest"),
+            messages=[{"role": "user", "content": "hi"}],
+            max_tokens=1,
+            extra_body={
+                "options": {"num_ctx": 2048, "num_thread": 4},
+                "keep_alive": "60m",
+            },
+        )
+    except Exception:
+        pass
+
+threading.Thread(target=_warmup_model, daemon=True).start()
+
 
 class Spinner:
     """Lightweight animated terminal spinner."""
 
-    def __init__(self, message="🤔 Thinking..."):
+    def __init__(self, message="⚡ Thinking..."):
         self.message = message
         self.running = False
         self.thread = None
@@ -45,7 +63,7 @@ class Spinner:
             sys.stdout.write(f"\r\033[90m{chars[idx % len(chars)]} {self.message}\033[0m")
             sys.stdout.flush()
             idx += 1
-            time.sleep(0.08)
+            time.sleep(0.04)  # Faster, snappy 25 FPS animation
         sys.stdout.write("\r\033[K")
         sys.stdout.flush()
 
@@ -63,27 +81,30 @@ class Spinner:
             sys.stdout.flush()
 
 
-messages = []
+def get_system_prompt():
+    now = datetime.now().astimezone()
+    now_str = now.strftime("%A, %B %d, %Y at %I:%M %p %Z")
+    return (
+        f"You are a helpful, fast assistant. Today is {now_str}. "
+        "Answer directly and concisely under 120 words. "
+        "Always use the web_search tool (just like Google search) to look up recent data, current news, latest events, scores, prices, or recent facts. "
+        "Use get_current_time for live time/timezone, get_current_date for today's date, and get_city_weather for weather."
+    )
+
+
+messages = [
+    {
+        "role": "system",
+        "content": get_system_prompt(),
+    }
+]
 
 # Safety limit: the max number of model rounds for ONE user question
 MAX_STEPS = 5
 
-messages.append(
-    {
-        "role": "system",
-        "content": (
-            "You are a helpful, humble assistant. "
-            "Answer general questions (programming, science, advice) from your own knowledge. "
-            "Use tools when needed: get_current_time for time/date, get_city_weather for weather, "
-            "get_user_city for user's city/location, and web_search to search the web for up-to-date facts or queries. "
-            "Keep answers concise and under 150 words."
-        ),
-    }
-)
-
 
 def stream_chat(history):
-    spinner = Spinner("🤔 Thinking...")
+    spinner = Spinner("⚡ Thinking...")
     spinner.start()
 
     try:
@@ -92,6 +113,15 @@ def stream_chat(history):
             messages=history,
             tools=TOOLS,
             stream=True,
+            extra_body={
+                "options": {
+                    "num_ctx": 2048,       # Faster prompt processing & reduced memory allocation
+                    "num_predict": 120,    # Capped output prevents rambling and speeds up finish
+                    "temperature": 0.2,    # Fast, focused sampling
+                    "num_thread": 4,       # Optimal thread allocation for 4 CPU cores
+                },
+                "keep_alive": "60m",       # Keep model hot in memory (no cold-reload delay)
+            },
         )
     except Exception as e:
         spinner.stop()

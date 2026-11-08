@@ -4,6 +4,9 @@ from Utilities.utilities import log
 import requests
 import json
 import re
+import urllib.parse
+import xml.etree.ElementTree as ET
+import bs4
 
 if sys.platform == "win32":
     try:
@@ -14,7 +17,18 @@ if sys.platform == "win32":
 
 
 def get_current_time():
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    """Returns the current live date, time, day of week, and local timezone."""
+    now = datetime.now().astimezone()
+    tz_name = now.tzname() or "Local Time"
+    offset = now.strftime("%z")
+    formatted_offset = f"UTC{offset[:3]}:{offset[3:]}" if offset else ""
+    return now.strftime(f"%A, %B %d, %Y at %I:%M:%S %p {tz_name} ({formatted_offset})")
+
+
+def get_current_date():
+    """Returns today's date, weekday, and year."""
+    now = datetime.now().astimezone()
+    return now.strftime("%A, %B %d, %Y")
 
 
 def get_user_city():
@@ -36,66 +50,128 @@ def get_city_weather(city: str = ""):
         return f"Could not retrieve weather for {city_name}: {e}"
 
 
-def web_search(query: str):
+def web_search(query: str, max_results: int = 5):
     """
-    Searches the web for up-to-date information, news, facts, or definitions.
-    Uses DuckDuckGo Instant Answers and Wikipedia search as reliable fallback.
+    Searches the live web for up-to-date news, recent events, facts, or definitions.
+    Uses Google-level live web search index with Google News RSS and Wikipedia fallback.
     """
     clean_query = str(query).strip()
     if not clean_query:
         return "Please provide a valid search query."
 
-    # 1. Try DuckDuckGo Instant Answer API
+    results = []
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    }
+    q_enc = urllib.parse.quote_plus(clean_query)
+
+    # 1. Primary Live Web Search (Yahoo Web Index - semantic & rich snippets like Google)
     try:
-        url = "https://api.duckduckgo.com/"
-        params = {"q": clean_query, "format": "json", "no_html": 1, "skip_disambig": 1}
-        resp = requests.get(url, params=params, timeout=6)
-        if resp.status_code == 200:
-            data = resp.json()
-            abstract = data.get("AbstractText", "").strip()
-            if abstract:
-                return f"DuckDuckGo Summary: {abstract}"
-            related = [t["Text"] for t in data.get("RelatedTopics", []) if "Text" in t]
-            if related:
-                return "Search results:\n" + "\n".join(f"- {t}" for t in related[:3])
+        web_url = f"https://search.yahoo.com/search?p={q_enc}"
+        r_web = requests.get(web_url, headers=headers, timeout=6)
+        if r_web.status_code == 200:
+            soup = bs4.BeautifulSoup(r_web.text, "html.parser")
+            for div in soup.select("div.algo"):
+                h3 = div.select_one("h3")
+                comp = div.select_one(".compText") or div.select_one("p")
+                if h3 and comp:
+                    title = h3.get_text().strip()
+                    desc = comp.get_text().strip()
+                    desc = re.sub(r"[\u200b\u200e\u200f\ufffd]", "", desc)
+                    if title and desc:
+                        results.append(f"- {title}: {desc}")
+                if len(results) >= 3:
+                    break
     except Exception:
         pass
 
-    # 2. Fallback to Wikipedia Search API
+    # 2. Real-time News & Current Events (Google News RSS)
     try:
-        wiki_url = "https://en.wikipedia.org/w/api.php"
-        params = {
-            "action": "query",
-            "list": "search",
-            "srsearch": clean_query,
-            "format": "json",
-            "utf8": 1,
-        }
-        headers = {"User-Agent": "SimpleAIAgent/1.0"}
-        resp = requests.get(wiki_url, params=params, headers=headers, timeout=6)
-        if resp.status_code == 200:
-            items = resp.json().get("query", {}).get("search", [])
-            if items:
-                lines = []
-                for item in items[:3]:
-                    title = item.get("title", "")
-                    raw_snippet = item.get("snippet", "")
-                    clean_snippet = re.sub(r"<[^>]+>", "", raw_snippet)
-                    lines.append(f"- {title}: {clean_snippet}")
-                return "Wikipedia results:\n" + "\n".join(lines)
+        news_url = f"https://news.google.com/rss/search?q={urllib.parse.quote(clean_query)}&hl=en-US&gl=US&ceid=US:en"
+        r_news = requests.get(news_url, headers=headers, timeout=5)
+        if r_news.status_code == 200:
+            root = ET.fromstring(r_news.content)
+            for item in root.findall(".//item")[:2]:
+                title = item.find("title").text if item.find("title") is not None else ""
+                pub = item.find("pubDate").text if item.find("pubDate") is not None else ""
+                src = item.find("source").text if item.find("source") is not None else ""
+                date_clean = pub[:16] if pub else ""
+                if title:
+                    results.append(f"[{date_clean}] {title} (Source: {src})")
     except Exception:
         pass
 
-    return f"No search results found for '{clean_query}'."
+    # 3. Secondary Web Search (Bing Web)
+    if len(results) < 3:
+        try:
+            bing_url = f"https://www.bing.com/search?q={q_enc}"
+            r_bing = requests.get(bing_url, headers=headers, timeout=5)
+            if r_bing.status_code == 200:
+                soup = bs4.BeautifulSoup(r_bing.text, "html.parser")
+                for li in soup.select("li.b_algo"):
+                    h2 = li.select_one("h2")
+                    p = li.select_one(".b_caption p") or li.select_one("p")
+                    if h2 and p:
+                        title = h2.get_text().strip()
+                        snippet = p.get_text().strip()
+                        snippet = re.sub(r"[\u200b\u200e\u200f\ufffd]", "", snippet)
+                        if title and snippet:
+                            results.append(f"- {title}: {snippet}")
+                    if len(results) >= max_results:
+                        break
+        except Exception:
+            pass
+
+    # 4. Fallback: Wikipedia Search API
+    if not results:
+        try:
+            wiki_url = "https://en.wikipedia.org/w/api.php"
+            params = {
+                "action": "query",
+                "list": "search",
+                "srsearch": clean_query,
+                "format": "json",
+                "utf8": 1,
+            }
+            resp = requests.get(wiki_url, params=params, headers={"User-Agent": "SimpleAIAgent/1.0"}, timeout=4)
+            if resp.status_code == 200:
+                items = resp.json().get("query", {}).get("search", [])
+                if items:
+                    for item in items[:max_results]:
+                        title = item.get("title", "")
+                        raw_snippet = item.get("snippet", "")
+                        clean_snippet = re.sub(r"<[^>]+>", "", raw_snippet)
+                        results.append(f"- {title}: {clean_snippet}")
+        except Exception:
+            pass
+
+    if results:
+        seen = set()
+        final_list = []
+        for r in results:
+            clean_r = r.strip()
+            if clean_r and clean_r not in seen:
+                seen.add(clean_r)
+                final_list.append(clean_r)
+        return "Live Web Search Results:\n" + "\n".join(final_list[:max_results])
+    return f"No recent web results found for '{clean_query}'."
 
 
-# TOOLS = [{}, {}, {}]
+# TOOLS list
 TOOLS = [
     {
         "type": "function",
         "function": {
             "name": "get_current_time",
-            "description": "Returns the current date and time as a formatted string.",
+            "description": "Returns current live date, time, weekday, and local timezone.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_current_date",
+            "description": "Returns today's date, weekday, and year.",
             "parameters": {"type": "object", "properties": {}},
         },
     },
@@ -103,13 +179,13 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "get_city_weather",
-            "description": "Returns the current weather for a given city.",
+            "description": "Returns current weather for a city.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "city": {
                         "type": "string",
-                        "description": "City to get the weather for.",
+                        "description": "City name",
                     }
                 },
                 "required": ["city"],
@@ -120,7 +196,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "get_user_city",
-            "description": "Returns the city where the user lives. Use this when the user says 'my city', 'my Home', 'where I live' or 'my location' without naming the city.",
+            "description": "Returns the city where the user lives.",
             "parameters": {"type": "object", "properties": {}},
         },
     },
@@ -128,13 +204,13 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "web_search",
-            "description": "Searches the web for up-to-date information, news, facts, definitions, or general knowledge.",
+            "description": "Performs a live web and Google News search just like Google. Use this whenever the user asks for recent data, latest news, current events, scores, prices, updates, or anything requiring current web info.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "The search query or keywords to look up on the web.",
+                        "description": "Search query or keywords to search on Google/web",
                     }
                 },
                 "required": ["query"],
@@ -146,6 +222,7 @@ TOOLS = [
 
 FUNCTION_NAME_TO_FUNCTION_MAP = {
     "get_current_time": get_current_time,
+    "get_current_date": get_current_date,
     "get_city_weather": get_city_weather,
     "get_user_city": get_user_city,
     "web_search": web_search,
