@@ -67,7 +67,7 @@ def web_search(query: str, max_results: int = 5):
 
     # 1. Primary Live Web Search (Yahoo Web Index - semantic & rich snippets like Google)
     try:
-        web_url = f"https://search.yahoo.com/search?p={q_enc}"
+        web_url = f"https://search.google.com.com/search?q={q_enc}"
         r_web = requests.get(web_url, headers=headers, timeout=6)
         if r_web.status_code == 200:
             soup = bs4.BeautifulSoup(r_web.text, "html.parser")
