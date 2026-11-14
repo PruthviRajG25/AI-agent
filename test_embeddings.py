@@ -16,4 +16,4 @@ response = client.embeddings.create(
 
 for i, embedding in enumerate(response.data):
     print("length: ",len(embedding.embedding))
-    print(embedding.embedding[:3])  # Print the first 3 dimensions of the embedding
+    print(embedding.embedding[:3])  
