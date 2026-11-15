@@ -89,11 +89,16 @@ def test(user_query, documents, top_k=3):
     
     
 
-#Let's start testing
-documents = load_documents()
-documents = add_embeddings(documents)
+def main():
+    try:
+        documents = load_documents()
+        documents = add_embeddings(documents)
 
-print(f"We have embedded {len(documents)} documents")
+        print(f"We have embedded {len(documents)} documents")
+        test("steps for interviewing?", documents, 3)
+    except KeyboardInterrupt:
+        print("\nStopped by user. Exiting safely.")
 
-user_query = "steps for interviewing?"
-test(user_query, documents, 3)
+
+if __name__ == "__main__":
+    main()

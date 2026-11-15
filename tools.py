@@ -1,194 +1,68 @@
-import sys
 from datetime import datetime
 from Utilities.utilities import log
+from rag import search
 import requests
 import json
-import re
-import urllib.parse
-import xml.etree.ElementTree as ET
-import bs4
-
-if sys.platform == "win32":
-    try:
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
-    except Exception:
-        pass
 
 
 def get_current_time():
-    """Returns the current live date, time, day of week, and local timezone."""
-    now = datetime.now().astimezone()
-    tz_name = now.tzname() or "Local Time"
-    offset = now.strftime("%z")
-    formatted_offset = f"UTC{offset[:3]}:{offset[3:]}" if offset else ""
-    return now.strftime(f"%A, %B %d, %Y at %I:%M:%S %p {tz_name} ({formatted_offset})")
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
-def get_current_date():
-    """Returns today's date, weekday, and year."""
-    now = datetime.now().astimezone()
-    return now.strftime("%A, %B %d, %Y")
-
+def get_city_weather(city):
+    url = f"https://wttr.in/{city}?format=3"
+    response = requests.get(url, timeout=10)
+    response.raise_for_status() #This will raise HTTPError if something goes wrong
+    return response.text
 
 def get_user_city():
     return "Bangalore"
 
 
-def get_city_weather(city: str = ""):
-    city_name = str(city).strip()
-    # If the model passes a placeholder or asks about user's city directly
-    if not city_name or city_name.lower() in ("get_user_city", "user_city", "my city", "my location", "here", "none"):
-        city_name = get_user_city()
+def search_knowledge_base(query):
+    results = search(query, top_k=2)
 
-    try:
-        url = f"https://wttr.in/{city_name}?format=3"
-        response = requests.get(url, timeout=10)
-        response.raise_for_status()
-        return response.text.strip()
-    except Exception as e:
-        return f"Could not retrieve weather for {city_name}: {e}"
+    log(f"📚 Knowledge base search: {query}")
+    for r in results:
+        log(f"   {r['score']:.2f} - {r['source']} #{r['chunk_id']}")
 
+    blocks = []
+    for r in results:
+        sourceFileName = r['source']
+        chunkId        = r['chunk_id']
+        chunkText      = r['text']
 
-def web_search(query: str, max_results: int = 5):
-    """
-    Searches the live web for up-to-date news, recent events, facts, or definitions.
-    Uses Google-level live web search index with Google News RSS and Wikipedia fallback.
-    """
-    clean_query = str(query).strip()
-    if not clean_query:
-        return "Please provide a valid search query."
+        header = f"[{sourceFileName} #{chunkId}]"
+        block  = f"{header}\n{chunkText}"
+        blocks.append(block)
 
-    results = []
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    }
-    q_enc = urllib.parse.quote_plus(clean_query)
-
-    # 1. Primary Live Web Search (Yahoo Web Index - semantic & rich snippets like Google)
-    try:
-        web_url = f"https://search.google.com.com/search?q={q_enc}"
-        r_web = requests.get(web_url, headers=headers, timeout=6)
-        if r_web.status_code == 200:
-            soup = bs4.BeautifulSoup(r_web.text, "html.parser")
-            for div in soup.select("div.algo"):
-                h3 = div.select_one("h3")
-                comp = div.select_one(".compText") or div.select_one("p")
-                if h3 and comp:
-                    title = h3.get_text().strip()
-                    desc = comp.get_text().strip()
-                    desc = re.sub(r"[\u200b\u200e\u200f\ufffd]", "", desc)
-                    if title and desc:
-                        results.append(f"- {title}: {desc}")
-                if len(results) >= 3:
-                    break
-    except Exception:
-        pass
-
-    # 2. Real-time News & Current Events (Google News RSS)
-    try:
-        news_url = f"https://news.google.com/rss/search?q={urllib.parse.quote(clean_query)}&hl=en-US&gl=US&ceid=US:en"
-        r_news = requests.get(news_url, headers=headers, timeout=5)
-        if r_news.status_code == 200:
-            root = ET.fromstring(r_news.content)
-            for item in root.findall(".//item")[:2]:
-                title = item.find("title").text if item.find("title") is not None else ""
-                pub = item.find("pubDate").text if item.find("pubDate") is not None else ""
-                src = item.find("source").text if item.find("source") is not None else ""
-                date_clean = pub[:16] if pub else ""
-                if title:
-                    results.append(f"[{date_clean}] {title} (Source: {src})")
-    except Exception:
-        pass
-
-    # 3. Secondary Web Search (Bing Web)
-    if len(results) < 3:
-        try:
-            bing_url = f"https://www.bing.com/search?q={q_enc}"
-            r_bing = requests.get(bing_url, headers=headers, timeout=5)
-            if r_bing.status_code == 200:
-                soup = bs4.BeautifulSoup(r_bing.text, "html.parser")
-                for li in soup.select("li.b_algo"):
-                    h2 = li.select_one("h2")
-                    p = li.select_one(".b_caption p") or li.select_one("p")
-                    if h2 and p:
-                        title = h2.get_text().strip()
-                        snippet = p.get_text().strip()
-                        snippet = re.sub(r"[\u200b\u200e\u200f\ufffd]", "", snippet)
-                        if title and snippet:
-                            results.append(f"- {title}: {snippet}")
-                    if len(results) >= max_results:
-                        break
-        except Exception:
-            pass
-
-    # 4. Fallback: Wikipedia Search API
-    if not results:
-        try:
-            wiki_url = "https://en.wikipedia.org/w/api.php"
-            params = {
-                "action": "query",
-                "list": "search",
-                "srsearch": clean_query,
-                "format": "json",
-                "utf8": 1,
-            }
-            resp = requests.get(wiki_url, params=params, headers={"User-Agent": "SimpleAIAgent/1.0"}, timeout=4)
-            if resp.status_code == 200:
-                items = resp.json().get("query", {}).get("search", [])
-                if items:
-                    for item in items[:max_results]:
-                        title = item.get("title", "")
-                        raw_snippet = item.get("snippet", "")
-                        clean_snippet = re.sub(r"<[^>]+>", "", raw_snippet)
-                        results.append(f"- {title}: {clean_snippet}")
-        except Exception:
-            pass
-
-    if results:
-        seen = set()
-        final_list = []
-        for r in results:
-            clean_r = r.strip()
-            if clean_r and clean_r not in seen:
-                seen.add(clean_r)
-                final_list.append(clean_r)
-        return "Live Web Search Results:\n" + "\n".join(final_list[:max_results])
-    return f"No recent web results found for '{clean_query}'."
+    return "\n\n".join(blocks)
 
 
-# TOOLS list
+#TOOLS = [{}, {}, {}]
 TOOLS = [
     {
-        "type": "function",
-        "function": {
-            "name": "get_current_time",
-            "description": "Returns current live date, time, weekday, and local timezone.",
-            "parameters": {"type": "object", "properties": {}},
+        "type" : "function",
+        "function" : {
+            "name" : "get_current_time",
+            "description" : "Returns the current date and time as a formatted string.",
+            "parameters" : { "type" : "object", "properties" : {}},
         },
     },
     {
-        "type": "function",
-        "function": {
-            "name": "get_current_date",
-            "description": "Returns today's date, weekday, and year.",
-            "parameters": {"type": "object", "properties": {}},
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "get_city_weather",
-            "description": "Returns current weather for a city.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "city": {
-                        "type": "string",
-                        "description": "City name",
+        "type" : "function",
+        "function" : {
+            "name" : "get_city_weather",
+            "description" : "Returns the current weather for a given city.",
+            "parameters" : {
+                "type" : "object",
+                "properties" : {
+                    "city" : {
+                        "type" : "string",
+                        "description" : "City to get the weather for.",
                     }
                 },
-                "required": ["city"],
+                "required": ["city"]
             },
         },
     },
@@ -196,21 +70,23 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "get_user_city",
-            "description": "Returns the city where the user lives.",
+            "description": "Returns the city where the user lives. Use this when the user says 'my city', 'my Home', 'where I live' or 'my location' without naming the city.",
             "parameters": {"type": "object", "properties": {}},
         },
     },
     {
         "type": "function",
         "function": {
-            "name": "web_search",
-            "description": "Performs a live web and Google News search just like Google. Use this whenever the user asks for recent data, latest news, current events, scores, prices, updates, or anything requiring current web info.",
+            "name": "search_knowledge_base",
+            "description" : "Searches the Zorvex Technologies company knowledge base: leave, medical, HR, hiring, tech, incident "
+                            "reports and travel expense policies. Use it for any question about company policies or documents. "
+                            "Returns the most relevant passages with their source.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "Search query or keywords to search on Google/web",
+                        "description": "The user's question, rewritten as a short, self-contained search query.",
                     }
                 },
                 "required": ["query"],
@@ -221,11 +97,10 @@ TOOLS = [
 
 
 FUNCTION_NAME_TO_FUNCTION_MAP = {
-    "get_current_time": get_current_time,
-    "get_current_date": get_current_date,
-    "get_city_weather": get_city_weather,
-    "get_user_city": get_user_city,
-    "web_search": web_search,
+    "get_current_time" : get_current_time,
+    "get_city_weather" : get_city_weather,
+    "get_user_city" : get_user_city,
+    "search_knowledge_base" : search_knowledge_base,
 }
 
 

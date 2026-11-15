@@ -6,8 +6,8 @@ from dotenv import load_dotenv
 load_dotenv() #by default looks for .env file
 
 client = OpenAI(
-    base_url=os.getenv("BASE_URL"),
-    api_key=os.getenv("API_KEY")
+    base_url=os.getenv("BASE_URL", "http://127.0.0.1:11434/v1"),
+    api_key=os.getenv("API_KEY", "dummy"),
 )
 
 
