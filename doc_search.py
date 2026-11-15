@@ -95,5 +95,5 @@ documents = add_embeddings(documents)
 
 print(f"We have embedded {len(documents)} documents")
 
-user_query = "hello  ?"
+user_query = "steps for interviewing?"
 test(user_query, documents, 3)
