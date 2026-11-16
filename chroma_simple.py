@@ -1,22 +1,23 @@
 import os
+from pathlib import Path
+
 import chromadb
 from openai import OpenAI
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(Path(__file__).parent / ".env")
 
 client = OpenAI(
-    base_url=os.getenv("BASE_URL"),
-    api_key=os.getenv("API_KEY")
+    base_url=os.getenv("BASE_URL", "http://127.0.0.1:11434/v1"),
+    api_key=os.getenv("API_KEY", "dummy"),
 )
 
-EMBED_MODEL = os.getenv("EMBED_MODEL")
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "nomic-embed-text:latest")
 
-#Get the embedding of a text using EMBED_MODEL
 def get_embedding(text):
     response = client.embeddings.create(
-        model=EMBED_MODEL,
-        input=text
+        model=EMBEDDING_MODEL,
+        input=text,
     )
     return response.data[0].embedding
 
@@ -55,15 +56,19 @@ zorvex_collection.upsert( #It will update if an Id is existing, otherwise it wil
 )
 
 
-query = "When is the production deployment allowed ? "
-query_embdding = get_embedding(query)
+
+
+query = "what is leave policy?"
+query_embedding = get_embedding(query)
 
 results = zorvex_collection.query(
-    query_embeddings=[query_embdding],
-    n_results=1
+    query_embeddings=[query_embedding],
+    n_results=1,
 )
 
 print(results["documents"][0])
+print(results["distances"][0])
+
 
 
 
